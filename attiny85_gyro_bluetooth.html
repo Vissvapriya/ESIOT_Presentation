@@ -1,0 +1,177 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Interfacing Gyro and Bluetooth with ATtiny85</title>
+<style>
+:root{--pcb:#0f3d2e;--cu:#b4692b;--bg:#f3f6f2;--ink:#17231d;--card:#fff;--ok:#1b7a43;--bad:#b3261e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 Charter,Georgia,serif}
+header{background:var(--pcb);color:#eaf3ee;padding:2rem 1rem 1.2rem;border-bottom:6px solid var(--cu)}
+header h1{margin:0 0 .3rem;font:700 clamp(1.5rem,4vw,2.4rem)/1.2 "Trebuchet MS",sans-serif}
+header p{margin:.2rem 0;max-width:80ch}
+nav{position:sticky;top:0;background:#0b2d22;display:flex;flex-wrap:wrap;gap:.2rem .9rem;padding:.5rem 1rem;z-index:5}
+nav a{color:#f0c9a0;text-decoration:none;font:600 .85rem "Trebuchet MS",sans-serif}nav a:hover{text-decoration:underline}
+main{max-width:980px;margin:auto;padding:1rem}
+section{background:var(--card);border-left:5px solid var(--cu);padding:1rem 1.2rem;margin:1.2rem 0;border-radius:4px;overflow-x:auto}
+h2{font:700 1.45rem "Trebuchet MS",sans-serif;color:var(--pcb);margin-top:0}h3{font:700 1.05rem "Trebuchet MS",sans-serif;margin:1rem 0 .3rem}
+table{border-collapse:collapse;width:100%;margin:.6rem 0;font-size:.92rem}th,td{border:1px solid #c9d6cd;padding:.35rem .5rem;text-align:left;vertical-align:top}th{background:#e3ede6}
+code,pre{font-family:Consolas,monospace;font-size:.86rem}pre{background:#0e1b15;color:#d7efe0;padding:.8rem;overflow:auto;border-radius:4px}
+.eq{background:#f6efe6;border:1px solid #e2cdb3;padding:.4rem .8rem;margin:.5rem 0;font-family:Cambria,Georgia,serif;font-size:1.02rem}
+.key{background:#e9f5ec;border-left:4px solid var(--ok);padding:.4rem .8rem;margin:.6rem 0}
+.warn{background:#fdecea;border-left:4px solid var(--bad);padding:.4rem .8rem;margin:.6rem 0}
+.q{border:1px solid #cfd9d2;border-radius:4px;padding:.6rem .8rem;margin:.7rem 0}.q label{display:block;padding:.1rem 0;cursor:pointer}
+.q.ok{border-color:var(--ok);background:#f1faf4}.q.no{border-color:var(--bad);background:#fff4f3}.q.na{border-color:#b08a00;background:#fffbe8}
+.ex{display:none;margin-top:.4rem;font-size:.92rem}.q.show .ex{display:block}
+.tag{font:700 .72rem "Trebuchet MS",sans-serif;padding:.1rem .45rem;border-radius:9px;background:var(--pcb);color:#fff;margin-left:.4rem}
+button{background:var(--pcb);color:#fff;border:0;border-radius:4px;padding:.5rem 1rem;margin:.3rem .3rem .3rem 0;font:600 .9rem "Trebuchet MS",sans-serif;cursor:pointer}button:hover{background:var(--cu)}button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #f0a040}
+.score{font:700 1.1rem "Trebuchet MS",sans-serif;margin:.4rem 0}
+details{border:1px solid #cfd9d2;border-radius:4px;padding:.4rem .8rem;margin:.5rem 0}summary{cursor:pointer;font-weight:700}
+svg{max-width:100%;height:auto;background:#fbfdfb;border:1px solid #cfd9d2}
+@media print{nav,button{display:none}section{break-inside:avoid;border:1px solid #999}.ex{display:block}header{color:#000;background:#fff}}
+</style></head><body>
+<header><h1>Interfacing a Gyroscope (MPU-6050) and Bluetooth (HC-05) with the ATtiny85</h1>
+<p><b>Subject:</b> Embedded Systems &amp; Interfacing &nbsp; <b>Level:</b> B.E./B.Tech ECE, GATE, core-company interviews</p>
+<p><b>You will learn to:</b> wire an I²C gyro and a UART Bluetooth module to an 8-pin MCU; convert raw counts to °/s; budget bandwidth; fuse gyro and accelerometer data; debug the usual failures.</p></header>
+<nav><a href="#intro">Intro</a><a href="#diagram">Diagram</a><a href="#working">Working</a><a href="#waves">Waveforms</a><a href="#eq">Equations</a><a href="#problems">Solved problems</a><a href="#gate">GATE</a><a href="#interview">Interview</a><a href="#apps">Applications</a><a href="#quiz">Topic quiz</a><a href="#revise">Revision</a></nav>
+<main>
+<section id="intro"><h2>1. Introduction and objectives</h2>
+<p>The <b>ATtiny85</b> is an 8-bit AVR with 8 KB flash, 512 B SRAM, 512 B EEPROM and six pins (PB0–PB5). It has <b>no hardware UART or TWI</b>; its <b>USI</b> (Universal Serial Interface) shifts bits for software-assisted I²C or SPI. A <b>MEMS gyroscope</b> (here the InvenSense MPU-6050: 3-axis gyro + 3-axis accelerometer) reports angular rate over I²C. A <b>Bluetooth SPP module</b> (HC-05/HC-06) is a transparent wireless UART bridge. Together they make a tiny wireless motion sensor.</p>
+<p><b>Principle:</b> the MCU is I²C master, reads rate registers at a fixed period, scales them to physical units, optionally fuses them with accelerometer data, and prints a packet on a bit-banged serial port that the Bluetooth module relays to a phone or PC.</p>
+<h3>Prerequisites</h3><p>I²C (START/STOP, ACK, open-drain, pull-ups), UART 8N1 framing, two's-complement numbers, voltage dividers, AVR fuses.</p>
+<h3>Terminology</h3>
+<table><tr><th>Term</th><th>Meaning</th></tr>
+<tr><td>Sensitivity</td><td>Raw LSB per physical unit (e.g. 131 LSB/(°/s) at ±250 °/s)</td></tr>
+<tr><td>Bias / drift</td><td>Non-zero output at zero rate; integrating it grows angle error linearly</td></tr>
+<tr><td>SPP</td><td>Bluetooth Serial Port Profile (HC-05/06 use it)</td></tr>
+<tr><td>USI</td><td>ATtiny85 shift-register peripheral on PB0 (DI/SDA), PB1 (DO), PB2 (USCK/SCL)</td></tr>
+<tr><td>Baud</td><td>Symbols per second; for 8N1 each byte takes 10 bit times</td></tr></table>
+<h3>Types / variants</h3>
+<table><tr><th>Item</th><th>Options</th></tr><tr><td>Bluetooth</td><td>HC-06 (slave only), HC-05 (master/slave, AT mode), BLE modules (HM-10) for phones without SPP</td></tr><tr><td>Gyro</td><td>MPU-6050 (I²C), MPU-6500/9250, L3GD20 (SPI/I²C), analog gyros (ADC)</td></tr></table></section>
+
+<section id="diagram"><h2>2. System diagram (block and wiring)</h2>
+<svg viewBox="0 0 860 330" role="img" aria-label="Wiring block diagram" font-family="Trebuchet MS,sans-serif" font-size="13">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0L8,4L0,8z" fill="#0f3d2e"/></marker></defs>
+<rect x="20" y="90" width="190" height="130" fill="#e3ede6" stroke="#0f3d2e" stroke-width="2"/><text x="115" y="115" text-anchor="middle" font-weight="700">MPU-6050 (GY-521)</text><text x="35" y="145">VCC 3.3 V</text><text x="35" y="165">GND</text><text x="35" y="185">SDA</text><text x="35" y="205">SCL (AD0→GND: 0x68)</text>
+<rect x="330" y="90" width="190" height="130" fill="#f6efe6" stroke="#b4692b" stroke-width="2"/><text x="425" y="115" text-anchor="middle" font-weight="700">ATtiny85 @ 8 MHz</text><text x="345" y="140">PB0 = SDA (USI)</text><text x="345" y="160">PB2 = SCL (USI)</text><text x="345" y="180">PB3 = TX (soft UART)</text><text x="345" y="200">PB4 = RX (soft UART)</text>
+<rect x="650" y="90" width="190" height="130" fill="#e3ede6" stroke="#0f3d2e" stroke-width="2"/><text x="745" y="115" text-anchor="middle" font-weight="700">HC-05 Bluetooth</text><text x="665" y="150">RXD (3.3 V logic)</text><text x="665" y="180">TXD</text><text x="665" y="205">VCC 5 V / GND</text>
+<line x1="210" y1="185" x2="330" y2="140" stroke="#0f3d2e" stroke-width="2" marker-end="url(#a)"/><line x1="210" y1="205" x2="330" y2="160" stroke="#0f3d2e" stroke-width="2" marker-end="url(#a)"/>
+<text x="215" y="260">4.7 kΩ pull-ups from SDA &amp; SCL to 3.3 V</text>
+<line x1="520" y1="180" x2="580" y2="180" stroke="#0f3d2e" stroke-width="2"/><rect x="580" y="170" width="30" height="20" fill="#fff" stroke="#000"/><text x="595" y="164" text-anchor="middle">1k</text><line x1="610" y1="180" x2="650" y2="150" stroke="#0f3d2e" stroke-width="2" marker-end="url(#a)"/><rect x="620" y="215" width="20" height="30" fill="#fff" stroke="#000"/><text x="648" y="235">2k to GND</text><line x1="630" y1="165" x2="630" y2="215" stroke="#0f3d2e"/>
+<line x1="650" y1="180" x2="520" y2="200" stroke="#b4692b" stroke-width="2" marker-end="url(#a)"/>
+<text x="425" y="300" text-anchor="middle">Common ground for all three. If the supply is 5 V, divide TX→RXD (5 V × 2k/3k = 3.33 V).</text></svg>
+<table><tr><th>Part</th><th>Function</th></tr>
+<tr><td>4.7 kΩ pull-ups</td><td>I²C lines are open-drain; they need pull-ups to define the logic-high level and rise time</td></tr>
+<tr><td>1 kΩ / 2 kΩ divider</td><td>Reduces 5 V MCU TX to ≈3.3 V for the HC-05 RXD</td></tr>
+<tr><td>PB5 (RESET)</td><td>Left unused so ISP programming still works</td></tr>
+<tr><td>Decoupling 100 nF</td><td>Placed at each supply pin to suppress switching noise</td></tr></table></section>
+
+<section id="working"><h2>3. Working principle</h2>
+<ol><li><b>Clock:</b> factory fuses give 8 MHz RC ÷8 = 1 MHz. Program fuses for 8 MHz so software UART timing at 9600 baud is reliable.</li>
+<li><b>Wake the gyro:</b> MPU-6050 powers up asleep (PWR_MGMT_1 = 0x40). Write 0x00 to register 0x6B.</li>
+<li><b>Read:</b> START, 0x68+W, register 0x43, repeated START, 0x68+R, 6 bytes (GYRO_XOUT_H…ZOUT_L), STOP. Each pair is a signed 16-bit value, high byte first.</li>
+<li><b>Scale:</b> ω = raw ÷ sensitivity (default ±250 °/s → 131).</li>
+<li><b>Transmit:</b> format a packet and send via SoftwareSerial on PB3. HC-05 radiates it; its received bytes arrive on PB4.</li></ol>
+<h3>DC vs AC (signal) view</h3><p><b>DC:</b> 3.3 V sensor supply, I²C idle-high via pull-ups, logic levels must match. <b>AC/dynamic:</b> 100 kHz I²C clock edges, 9600 baud serial bits (104.17 µs each).</p>
+<h3>Starter code (ATtinyCore, Arduino IDE)</h3>
+<pre>#include &lt;TinyWireM.h&gt;
+#include &lt;SoftwareSerial.h&gt;
+SoftwareSerial bt(4, 3);            // RX=PB4, TX=PB3
+void setup(){ bt.begin(9600); TinyWireM.begin();
+  TinyWireM.beginTransmission(0x68); TinyWireM.write(0x6B); TinyWireM.write(0); TinyWireM.endTransmission(); }
+void loop(){
+  TinyWireM.beginTransmission(0x68); TinyWireM.write(0x43); TinyWireM.endTransmission();
+  TinyWireM.requestFrom(0x68, 6);
+  int16_t g[3];
+  for(byte i=0;i&lt;3;i++){ int16_t h=TinyWireM.read(); g[i]=(h&lt;&lt;8)|TinyWireM.read(); }
+  bt.print(g[0]/131.0,1); bt.print(','); bt.print(g[1]/131.0,1); bt.print(','); bt.println(g[2]/131.0,1);
+  delay(20); }</pre>
+<div class="warn"><b>Limitations:</b> SoftwareSerial disables interrupts during bytes, so I²C timing and reception can be disturbed; RX and TX are not simultaneous; float printing costs flash on 8 KB; ATtiny85 has no hardware multiplier, so use fixed-point for heavy fusion.</div>
+<h3>Misconceptions</h3><ul><li>“Integrating gyro rate gives absolute angle.” It gives angle change; bias makes it drift.</li><li>“HC-05 pins are 5 V tolerant.” RXD is 3.3 V logic.</li><li>“PB5 is a normal pin.” Using it as I/O disables reset/ISP.</li></ul></section>
+
+<section id="waves"><h2>4. Waveforms (illustrative, not a measurement)</h2>
+<svg id="wf" viewBox="0 0 860 280" role="img" aria-label="Illustrative angle estimates"></svg>
+<p><b>Figure 1 (illustrative, generated by script; no simulation screenshot was supplied).</b> Black: true angle. Red: gyro-only integration with a constant bias, drifting away. Grey: accelerometer angle, noisy but unbiased. Green: complementary filter (α=0.98), smooth and drift-free.</p></section>
+
+<section id="eq"><h2>5. Equations</h2>
+<h3>Scaling</h3><div class="eq">ω (°/s) = N<sub>raw</sub> / S<sub>g</sub>, &nbsp; S<sub>g</sub> = 131, 65.5, 32.8, 16.4 LSB/(°/s) for ±250/500/1000/2000 °/s</div>
+<p>N<sub>raw</sub>: signed 16-bit count. Full-scale ÷ 32768 gives the same numbers (250/32768 → 131.07 LSB per °/s). Accelerometer: a (g) = N/16384 at ±2 g.</p>
+<h3>Angle integration</h3><div class="eq">θ<sub>k</sub> = θ<sub>k−1</sub> + ω<sub>k</sub>·Δt &nbsp;;&nbsp; drift = b·t</div>
+<p>b = bias in °/s, Δt in s. A constant bias integrates into linear error (limiting case: b=0 gives ideal tracking, but noise still gives random walk).</p>
+<h3>Complementary filter</h3><div class="eq">θ<sub>k</sub> = α(θ<sub>k−1</sub> + ω<sub>k</sub>Δt) + (1−α)θ<sub>acc</sub>, &nbsp; α = τ/(τ+Δt)</div>
+<p>High-pass on the gyro path, low-pass on the accelerometer path. τ is the crossover time constant (s). Valid when the sensor is not under sustained linear acceleration. θ<sub>acc</sub> = atan2(a<sub>y</sub>, a<sub>z</sub>).</p>
+<h3>Serial timing</h3><div class="eq">t<sub>byte</sub> = 10/B &nbsp;;&nbsp; f<sub>max</sub> = B/(10·N<sub>bytes</sub>)</div>
+<p>B in baud, 10 = start + 8 data + stop. Meaning: link-limited packet rate. For I²C: t ≈ (9·N<sub>bytes on bus</sub>)/f<sub>SCL</sub>.</p>
+<h3>Level shifter</h3><div class="eq">V<sub>out</sub> = V<sub>in</sub>·R<sub>2</sub>/(R<sub>1</sub>+R<sub>2</sub>)</div>
+<p>Unloaded divider; valid because the HC-05 RXD input current is negligible.</p></section>
+
+<section id="problems"><h2>6. Solved problems</h2>
+<h3>P1 (Easy): scaling</h3><p>Gyro at ±250 °/s outputs raw = 262. <b>Find ω.</b> Formula ω = N/S<sub>g</sub>. ω = 262 / 131 LSB/(°/s) = <b>2 °/s</b>. Interpretation: the board is rotating slowly, about one turn per 3 minutes.</p>
+<h3>P2 (Moderate): integration</h3><p>±500 °/s range, raw = −6550, Δt = 20 ms. S<sub>g</sub>=65.5, ω = −6550/65.5 = −100 °/s. Δθ = −100 × 0.020 s = <b>−2°</b> per sample. Over 50 samples (1 s) = −100°. Interpretation: the sign gives rotation direction.</p>
+<h3>P3 (GATE style): bandwidth</h3><p>Packet = 2 header + 12 data + 1 checksum = 15 bytes, 9600 baud 8N1. Bits/packet = 15×10 = 150. f<sub>max</sub> = 9600/150 = <b>64 packets/s</b> (15.6 ms each). Practical rates are lower due to I²C read time (≈0.85 ms for 6 bytes at 100 kHz) and disabled interrupts. Shortcut: bytes/s = baud/10.</p></section>
+
+<section id="gate"><h2>7. GATE-style preparation</h2><p>Ten original questions (not actual previous-year questions). Answer, then <b>Check</b>, or press <b>Show key</b> to read every solution.</p><div id="gq"></div></section>
+
+<section id="interview"><h2>8. Interview preparation</h2><div id="iv"></div>
+<h3>Industry perspective</h3><p>Wearables, drones and robots use the same chain (MEMS IMU → low-power MCU → wireless link). Interviewers test bus-level debugging, power/level compatibility, timing budgets and sensor-fusion intuition more than library usage.</p></section>
+
+<section id="apps"><h2>9. Applications and industry relevance</h2>
+<table><tr><th>Application</th><th>Role of this chain</th></tr><tr><td>Wireless gesture/motion controller</td><td>Tilt and rotation sent to a phone or robot</td></tr><tr><td>Self-balancing robot</td><td>Gyro rate for fast inner loop; accelerometer corrects drift</td></tr><tr><td>Fitness/helmet impact tag</td><td>Low-cost, low-power logging and alerts</td></tr><tr><td>Camera gimbal prototype</td><td>Rate feedback for stabilisation</td></tr><tr><td>Production test</td><td>Rate-table calibration of bias and scale factor</td></tr></table>
+<p><b>Design considerations:</b> battery life (sleep modes, HC-05 draws ~30–40 mA while connected), I²C pull-up values, ESD, vibration, temperature-dependent bias, antenna placement. <b>Challenges:</b> bit-bang timing, wrong logic level, missing common ground. <b>Roles:</b> embedded firmware, hardware validation, IoT product development, sensor test engineer.</p></section>
+
+<section id="quiz"><h2>10. Topic quiz (10 questions)</h2><div id="tq"></div></section>
+
+<section id="revise"><h2>11. Revision</h2>
+<table><tr><th>Quick formulas</th><th>Value</th></tr><tr><td>Gyro sensitivity</td><td>131 / 65.5 / 32.8 / 16.4 LSB per °/s</td></tr><tr><td>Accel ±2 g</td><td>16384 LSB/g</td></tr><tr><td>Bytes per second</td><td>baud ÷ 10</td></tr><tr><td>Bit time @9600</td><td>104.17 µs</td></tr><tr><td>MPU-6050 address / WHO_AM_I</td><td>0x68 (AD0 high: 0x69) / reads 0x68</td></tr></table>
+<table><tr><th></th><th>Gyro</th><th>Accelerometer</th></tr><tr><td>Short-term</td><td>Accurate</td><td>Noisy, vibration-sensitive</td></tr><tr><td>Long-term</td><td>Drifts</td><td>Stable (gravity reference)</td></tr></table>
+<table><tr><th>HC-05</th><th>HC-06</th></tr><tr><td>Master or slave, AT mode (38400 baud)</td><td>Slave only, default 9600</td></tr></table>
+<h3>Troubleshooting</h3><ul><li>All zeros: sleep bit not cleared.</li><li>No ACK: wrong address, no pull-ups, SDA/SCL swapped.</li><li>Garbage on phone: baud mismatch or MCU still at 1 MHz.</li><li>Cannot reflash: PB5 used as I/O.</li></ul>
+<div class="key"><b>Memory aid:</b> “Zero the sleep, scale by the range, divide baud by ten.”</div></section>
+</main>
+<script>
+const G=[
+["Easy","Which ATtiny85 peripheral lets it act as an I²C master or SPI device?",["USART","USI","TWI","ADC"],1,"The ATtiny85 has no hardware UART/TWI; the USI provides shift-register support. USART and TWI do not exist on it."],
+["Easy","MPU-6050 at ±500 °/s outputs raw = 3275. The rate is",["25 °/s","32.8 °/s","100 °/s","50 °/s"],3,"3275/65.5 = 50 °/s. Using 131 gives 25 (wrong range); 32.8 is the ±1000 sensitivity itself."],
+["Moderate","At 9600 baud, 8N1, one byte takes about",["0.83 ms","1.04 ms","1.25 ms","0.10 ms"],1,"10 bits/9600 = 1.04 ms. 0.83 ms ignores start/stop (8 bits)."],
+["Moderate","A 5 V TX line goes through 1 kΩ in series with a 2 kΩ to ground, tapped at the junction. The voltage at the junction is",["1.67 V","2.50 V","3.33 V","3.75 V"],2,"5×2/(1+2)=3.33 V, safe for 3.3 V logic. 1.67 V swaps the resistors."],
+["Moderate","A 15-byte packet is sent at 9600 baud 8N1 back to back. Maximum packet rate:",["64 /s","32 /s","640 /s","96 /s"],0,"15×10=150 bits; 9600/150 = 64. 640 forgets framing bits; 96 is not a valid count."],
+["Moderate","Gyro bias 0.5 °/s is integrated for 60 s. Angle error:",["0.5°","3°","30°","60°"],2,"Error = b·t = 0.5×60 = 30°. It grows linearly, which is why a reference is needed."],
+["Difficult","Complementary filter α=0.98, θ<sub>prev</sub>=10°, ω=20 °/s, Δt=0.01 s, θ<sub>acc</sub>=12°. New θ is",["10.236°","10.2°","12.2°","9.996°"],0,"0.98(10+0.2)+0.02×12 = 9.996+0.24 = 10.236°. 10.2° is gyro only; 9.996° omits the accelerometer term."],
+["Difficult","Which pin assignment keeps ISP/RESET usable and supports hardware USI I²C plus soft UART?",["I²C on PB3/PB4, UART on PB0/PB2","SDA on PB1, SCL on PB2, TX on PB5","RX on PB5 and I²C on PB0/PB2","I²C on PB0/PB2, UART on PB3/PB4"],3,"USI I²C is fixed to PB0 (SDA) and PB2 (SCL). PB5 is RESET, so using it disables ISP. Remaining PB3/PB4 suit UART."],
+["Difficult","Reading 6 gyro bytes at 100 kHz needs 9 bus bytes (addr+W, reg, addr+R, 6 data). Time ≈",["0.08 ms","0.8 ms","8 ms","80 ms"],1,"9 bytes × 9 clocks = 81 clocks → 0.81 ms (+ START/STOP overhead ≈0.85 ms)."],
+["Easy","MPU-6050 returns zeros after power-up. Most likely cause:",["Sleep bit in PWR_MGMT_1 (0x6B) not cleared","Wrong baud rate on the HC-05","ATtiny85 has no SRAM","I²C needs 12 V"],0,"The device boots in sleep mode (0x40); write 0x00 to 0x6B. The baud rate affects the Bluetooth link, not sensor readings."]];
+const T=[
+["The HC-05 RXD pin expects logic level of",["5 V","3.3 V","12 V","1.8 V"],1,"HC-05 modules use 3.3 V logic on data pins."],
+["The MPU-6050 WHO_AM_I register (0x75) returns",["0x68","0x69","0x75","0xFF"],0,"It returns 0x68 regardless of the AD0 pin."],
+["With AD0 tied high, the MPU-6050 7-bit address is",["0x68","0x69","0x6B","0x75"],1,"AD0 low = 0x68, high = 0x69."],
+["I²C pull-ups are required because the lines are",["push-pull","open-drain","differential","analog"],1,"Devices only pull low; resistors create the high level."],
+["Integrating a gyro rate alone drifts because",["Bias and noise accumulate","Gravity adds to it","I²C is slow","HC-05 interferes"],0,"Any constant bias integrates into linearly growing angle error."],
+["Which sensor gives a long-term stable tilt reference?",["Gyroscope","Accelerometer","Pull-up resistor","Crystal"],1,"Gravity direction is a drift-free reference (if not accelerating)."],
+["HC-06 differs from HC-05 mainly in that HC-06 is",["slave only","faster","5 V logic","wired"],0,"HC-05 can be master or slave."],
+["Factory ATtiny85 fuses give a system clock of",["8 MHz","1 MHz","16 MHz","32 kHz"],1,"8 MHz RC with CKDIV8 gives 1 MHz."],
+["At ±2 g the accelerometer sensitivity is",["16384 LSB/g","131 LSB/g","4096 LSB/g","65.5 LSB/g"],0,"32768 counts / 2 g = 16384 LSB/g."],
+["A key SoftwareSerial limitation is that it",["needs 12 V","blocks/uses interrupts and is half-duplex","cannot send","only runs at 300 baud"],1,"Bit-banging occupies the CPU and cannot send and receive at the same time."]];
+const I=[
+["Why can't you use hardware UART on ATtiny85?","It has none; use SoftwareSerial (timing sensitive) or choose an MCU with USART. Follow-up: higher baud rates need a faster clock or a different MCU."],
+["Why pull-ups on SDA/SCL?","Open-drain bus; pull-up R sets rise time (RC) and idle high. Too large: slow edges; too small: exceeds sink current."],
+["Sensor reads all zeros. Debug?","Check ACK with a scan, WHO_AM_I, then clear the sleep bit; verify pull-ups and 3.3 V; scope SCL/SDA."],
+["How do you connect a 5 V MCU to HC-05?","Divide TX to 3.3 V (1k/2k); HC-05 TXD at 3.3 V usually satisfies the 5 V MCU high threshold (~3 V) but check the datasheet."],
+["Gyro angle drifts. Fix?","Calibrate bias at rest and subtract; fuse with accelerometer (complementary/Kalman); consider temperature."],
+["Why complementary over Kalman here?","Few cycles, no float matrix maths, 512 B RAM; one tunable α."],
+["How do you choose the gyro range?","Smallest range exceeding expected peak rate: best resolution without clipping."],
+["Link throughput is lower than expected. Why?","Framing overhead (10 bits/byte), ASCII vs binary packets, I²C time, interrupts disabled by soft UART."],
+["How would you test this in production?","Rate table or fixture: compare outputs at known rates, record bias and scale error, pass/fail limits."],
+["Phone shows garbage characters. Check?","Baud mismatch (HC-05 data mode default 9600), MCU running at 1 MHz, wrong ground, wrong logic level."]];
+function mk(id,D,tag){const el=document.getElementById(id);let h="";D.forEach((q,i)=>{const o=tag?q.slice(1):q,n=id+i;
+h+=`<div class="q" id="${n}"><b>Q${i+1}.</b>${tag?`<span class="tag">${q[0]}</span>`:""} ${o[0]}`+o[1].map((t,j)=>`<label><input type="radio" name="${n}" value="${j}"> ${"ABCD"[j]}. ${t}</label>`).join("")+`<div class="ex"><b>Answer: ${"ABCD"[o[2]]}.</b> ${o[3]}</div></div>`});
+h+=`<button onclick="chk('${id}')">Check Answers</button>${tag?`<button onclick="key('${id}')">Show key</button>`:""}<button onclick="rst('${id}')">Reset Quiz</button><div class="score" id="${id}s"></div>`;el.innerHTML=h}
+function D(id){return id=="gq"?G:T}
+function chk(id){const d=D(id),g=id=="gq";let s=0,u=0;d.forEach((q,i)=>{const a=g?q[3]:q[2],b=document.getElementById(id+i),r=b.querySelector("input:checked");b.className="q show";
+if(!r){u++;b.classList.add("na")}else if(+r.value==a){s++;b.classList.add("ok")}else b.classList.add("no")});
+document.getElementById(id+"s").textContent=`Score: ${s}/10 (${s*10}%). Unanswered: ${u}. Green = correct, red = incorrect, yellow = unanswered.`}
+function key(id){D(id).forEach((q,i)=>document.getElementById(id+i).classList.add("show"))}
+function rst(id){D(id).forEach((q,i)=>{const b=document.getElementById(id+i);b.className="q";b.querySelectorAll("input").forEach(x=>x.checked=false)});document.getElementById(id+"s").textContent=""}
+mk("gq",G,1);mk("tq",T,0);
+document.getElementById("iv").innerHTML=I.map((x,i)=>`<details><summary>Q${i+1}. ${x[0]}</summary><p>${x[1]}</p></details>`).join("");
+window.addEventListener("beforeprint",()=>document.querySelectorAll("details").forEach(d=>d.open=true));
+(function(){let s=7,r=()=>(s=(s*1103515245+12345)%2147483648)/2147483648,N=200,W=860,H=280,t=[],g=[],a=[],c=[],gi=0,cf=0;
+for(let i=0;i<N;i++){const th=40*Math.sin(i/N*6.28),w=40*6.28/N*Math.cos(i/N*6.28);t.push(th);gi+=w+0.12;g.push(gi);a.push(th+(r()-.5)*14);cf=.98*(cf+w)+.02*a[i];c.push(cf)}
+const p=(arr,col,sw)=>`<polyline fill="none" stroke="${col}" stroke-width="${sw}" points="${arr.map((v,i)=>(40+i*(W-60)/N).toFixed(1)+","+(H/2-v*2.2).toFixed(1)).join(" ")}"/>`;
+document.getElementById("wf").innerHTML=`<line x1="40" y1="140" x2="840" y2="140" stroke="#999"/><text x="40" y="16" font-size="12">angle (°) vs time (illustrative)</text>`+p(a,"#aaa",1)+p(g,"#c0392b",1.5)+p(t,"#000",2)+p(c,"#1b7a43",2)})();
+</script></body></html>
